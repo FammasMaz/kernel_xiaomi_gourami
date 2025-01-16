@@ -15,7 +15,7 @@ mkdir android-kernel && cd android-kernel
 ```
 
 ```bash
-repo init -u https://github.com/hentaiOS-Devices/kernel_manifest.git -b BRANCH
+repo init -u https://github.com/JuicerV3/kernel_manifest.git -b BRANCH
 ```
 
 ```bash
@@ -33,7 +33,7 @@ The following table lists the `BRANCH` names for kernels available through this 
 Then build the kernel with:
 
 ```bash
-export SKIP_EXT_MODULES=true && bash ./build_alioth.sh
+export SKIP_EXT_MODULES=true && bash ./build_<device>.sh
 ```
 
 The kernel binary, modules, and corresponding image are located in the `out/BRANCH/dist` directory.
