@@ -24,8 +24,8 @@ repo sync
 
 The following table lists the `BRANCH` names for kernels available through this method
 
-| Device                                                       | Binary path in hentaiOS tree                                                                                                                                | Repo branches                                 |
-|--------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------|-----------------------------------------------|
+| Device                                                       | Binary path in hentaiOS tree                                                                                                                                | Repo branches                                               |
+|--------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------|
 | Mi 10 Mi 10 Pro Mi 10T (Pro) Mi 10 Ultra POCO F2 Pro POCO F3 | device/xiaomi/umi-kernel device/xiaomi/cmi-kernel device/xiaomi/apollo-kernel device/xiaomi/cas-kernel device/xiaomi/lmi-kernel device/xiaomi/alioth-kernel | Ursamoon, Ursamoon-KSU-Next-stable, Ursamoon-KSU-Next-susfs |
 
 ## Building the kernel
