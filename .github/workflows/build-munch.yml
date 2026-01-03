@@ -1,0 +1,199 @@
+name: Build Munch Kernel (boot.img)
+
+permissions:
+  contents: write
+  actions: write
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Munch KSU-Next SUSFS
+    runs-on: ubuntu-22.04
+    
+    steps:
+      - name: Maximize build space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 8192
+          swap-size-mb: 8192
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison build-essential flex libssl-dev libelf-dev \
+            git curl wget zip unzip python3 python-is-python3 \
+            libncurses-dev lz4 zstd cpio gcc-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu
+
+      - name: Setup directory structure
+        run: |
+          mkdir -p $GITHUB_WORKSPACE/kernel-build
+          cd $GITHUB_WORKSPACE/kernel-build
+          mkdir -p private/msm-google
+          mkdir -p prebuilts-master/clang/host/linux-x86
+          mkdir -p prebuilts/gas/linux-x86
+          mkdir -p prebuilts/kernel-build-tools/linux-x86/bin
+          mkdir -p prebuilts-master/misc/linux-x86/libufdt
+          mkdir -p prebuilts/boot-artifacts/ramdisks
+          mkdir -p private/msm-google-modules/wlan
+
+      - name: Download Clang toolchain
+        run: |
+          cd $GITHUB_WORKSPACE/kernel-build/prebuilts-master/clang/host/linux-x86
+          mkdir -p clang-r450784e && cd clang-r450784e
+          
+          # Try multiple sources for clang
+          wget -q https://github.com/AzumaSeren/clang/releases/download/r450784e/clang.tar.gz -O clang.tar.gz 2>/dev/null || \
+          wget -q https://github.com/AzumaSeren/clang/archive/refs/heads/main.zip -O clang.zip 2>/dev/null || true
+          
+          if [ -f clang.tar.gz ]; then
+            tar -xf clang.tar.gz
+            rm clang.tar.gz
+          elif [ -f clang.zip ]; then
+            unzip -q clang.zip
+            mv clang-main/* . 2>/dev/null || true
+            rm clang.zip
+          fi
+          
+          # Fallback: Use proton clang
+          if [ ! -f bin/clang ]; then
+            cd ..
+            rm -rf clang-r450784e
+            wget -q https://github.com/kdrag0n/proton-clang/archive/refs/heads/master.tar.gz -O proton.tar.gz
+            tar -xf proton.tar.gz
+            mv proton-clang-master clang-r450784e
+            rm proton.tar.gz
+          fi
+          
+          echo "Clang installed at: $(pwd)/clang-r450784e"
+          ls -la clang-r450784e/bin/clang 2>/dev/null || ls -la */bin/clang 2>/dev/null || echo "Clang binary check"
+
+      - name: Download build scripts and tools
+        run: |
+          cd $GITHUB_WORKSPACE/kernel-build
+          git clone --depth=1 https://android.googlesource.com/kernel/build build
+          mkdir -p build/build-tools/path/linux-x86
+
+      - name: Clone kernel source
+        run: |
+          cd $GITHUB_WORKSPACE/kernel-build
+          git clone --recurse-submodules --depth=1 \
+            -b Ursamoon-KSU-Next-susfs \
+            https://github.com/${{ github.repository }}.git \
+            private/msm-google
+          
+          cd private/msm-google
+          git submodule update --init --recursive
+
+      - name: Build kernel
+        run: |
+          cd $GITHUB_WORKSPACE/kernel-build
+          export ROOT_DIR=$(pwd)
+          
+          # Setup toolchain
+          CLANG_DIR="${ROOT_DIR}/prebuilts-master/clang/host/linux-x86/clang-r450784e"
+          export PATH="${CLANG_DIR}/bin:${PATH}"
+          export LD_LIBRARY_PATH="${CLANG_DIR}/lib64:${LD_LIBRARY_PATH}"
+          
+          echo "Testing clang..."
+          clang --version || ${CLANG_DIR}/bin/clang --version
+          
+          # Try build.sh first
+          echo "Attempting build with build.sh..."
+          BUILD_CONFIG=private/msm-google/build.config.munch.performance build/build.sh 2>&1 || {
+            echo "========================================"
+            echo "build.sh failed, trying manual build..."
+            echo "========================================"
+            
+            cd private/msm-google
+            
+            export ARCH=arm64
+            export SUBARCH=arm64
+            export CLANG_TRIPLE=aarch64-linux-gnu-
+            export CROSS_COMPILE=aarch64-linux-gnu-
+            
+            mkdir -p out
+            
+            # Generate defconfig
+            make O=out ARCH=arm64 \
+              CC=clang \
+              CLANG_TRIPLE=aarch64-linux-gnu- \
+              CROSS_COMPILE=aarch64-linux-gnu- \
+              LLVM=1 LLVM_IAS=1 \
+              vendor/munch_user_defconfig
+            
+            # Build kernel
+            make O=out ARCH=arm64 \
+              CC=clang \
+              CLANG_TRIPLE=aarch64-linux-gnu- \
+              CROSS_COMPILE=aarch64-linux-gnu- \
+              LLVM=1 LLVM_IAS=1 \
+              -j$(nproc --all)
+          }
+
+      - name: Create boot.img
+        run: |
+          cd $GITHUB_WORKSPACE
+          mkdir -p output
+          
+          # Find kernel Image
+          KERNEL_IMG=$(find kernel-build -name "Image" -type f | head -1)
+          if [ -z "$KERNEL_IMG" ]; then
+            KERNEL_IMG=$(find kernel-build -name "Image.gz" -type f | head -1)
+          fi
+          
+          echo "Found kernel: $KERNEL_IMG"
+          
+          # Find DTB
+          DTB_FILE=$(find kernel-build -path "*/arch/arm64/boot/dts/*" -name "*.dtb" -type f | head -1)
+          echo "Found DTB: $DTB_FILE"
+          
+          # Download mkbootimg
+          wget -q https://android.googlesource.com/platform/system/tools/mkbootimg/+archive/refs/heads/main.tar.gz -O mkbootimg.tar.gz
+          mkdir -p mkbootimg && tar -xf mkbootimg.tar.gz -C mkbootimg
+          chmod +x mkbootimg/mkbootimg.py
+          
+          # Download a stock boot.img ramdisk or create minimal one
+          # For now, create boot.img without ramdisk (kernel only - for fastboot boot)
+          
+          # Create boot.img
+          python3 mkbootimg/mkbootimg.py \
+            --kernel "$KERNEL_IMG" \
+            --pagesize 4096 \
+            --base 0x00000000 \
+            --kernel_offset 0x00008000 \
+            --ramdisk_offset 0x01000000 \
+            --tags_offset 0x00000100 \
+            --header_version 2 \
+            --os_version 12.0.0 \
+            --os_patch_level 2024-01 \
+            --cmdline "console=ttyMSM0,115200n8 androidboot.hardware=qcom androidboot.console=ttyMSM0 androidboot.memcg=1 lpm_levels.sleep_disabled=1 msm_rtb.filter=0x237 service_locator.enable=1 androidboot.usbcontroller=a600000.dwc3 swiotlb=2048 loop.max_part=7 cgroup.memory=nokmem,nosocket reboot=panic_warm buildvariant=user" \
+            --output output/boot.img \
+            2>&1 || {
+              echo "mkbootimg failed, copying raw kernel instead"
+              cp "$KERNEL_IMG" output/Image
+            }
+          
+          # Also copy raw files
+          cp "$KERNEL_IMG" output/ 2>/dev/null || true
+          [ -n "$DTB_FILE" ] && cp "$DTB_FILE" output/ 2>/dev/null || true
+          find kernel-build -name "dtbo.img" -exec cp {} output/ \; 2>/dev/null || true
+          
+          echo "========================================"
+          echo "Build artifacts:"
+          ls -la output/
+          echo "========================================"
+
+      - name: Upload boot.img
+        uses: actions/upload-artifact@v4
+        with:
+          name: munch-boot-img-${{ github.run_number }}
+          path: output/
+          retention-days: 30
