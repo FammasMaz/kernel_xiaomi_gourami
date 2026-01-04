@@ -1,0 +1,84 @@
+name: Build Munch Kernel
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+
+      - name: Setup build environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git make bc bison flex libssl-dev libelf-dev \
+            build-essential python3 python-is-python3 zip unzip curl wget \
+            libncurses-dev lld llvm
+
+      - name: Download Clang toolchain
+        run: |
+          mkdir -p $HOME/toolchains
+          cd $HOME/toolchains
+          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r530567.tar.gz -O clang.tar.gz
+          mkdir clang && tar -xzf clang.tar.gz -C clang
+
+      - name: Download GCC toolchain
+        run: |
+          cd $HOME/toolchains
+          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git aarch64-linux-android-4.9
+          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git arm-linux-androideabi-4.9
+
+      - name: Build kernel
+        run: |
+          export PATH="$HOME/toolchains/clang/bin:$HOME/toolchains/aarch64-linux-android-4.9/bin:$HOME/toolchains/arm-linux-androideabi-4.9/bin:$PATH"
+          export ARCH=arm64
+          export SUBARCH=arm64
+
+          # Clean
+          make mrproper
+
+          # Generate defconfig
+          make O=out ARCH=arm64 CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+            vendor/munch_user_defconfig
+
+          # Enable ThinLTO
+          scripts/config --file out/.config -e LTO_CLANG -e LTO_CLANG_THIN -d LTO_CLANG_FULL -d LTO_NONE
+
+          # Build
+          make O=out ARCH=arm64 CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+            LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+            -j$(nproc --all)
+
+      - name: Create boot.img
+        run: |
+          # Install mkbootimg
+          pip3 install mkbootimg
+
+          # Create boot.img for munch (SM8250 - Snapdragon 870)
+          mkbootimg \
+            --kernel out/arch/arm64/boot/Image \
+            --pagesize 4096 \
+            --base 0x00000000 \
+            --kernel_offset 0x00008000 \
+            --ramdisk_offset 0x01000000 \
+            --tags_offset 0x00000100 \
+            --dtb_offset 0x01f00000 \
+            --header_version 3 \
+            --os_version 12.0.0 \
+            --os_patch_level 2024-01 \
+            -o boot.img
+
+      - name: Upload boot.img
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot
+          path: boot.img
