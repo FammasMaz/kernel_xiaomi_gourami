@@ -10,6 +10,8 @@ jobs:
     steps:
       - name: Checkout kernel source
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Setup build environment
         run: |
